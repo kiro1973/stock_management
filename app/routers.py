@@ -18,7 +18,9 @@ router = APIRouter()
 def create_product(data: schemas.ProductCreate, db: Session = Depends(get_db)):
     # Pre-check SKU uniqueness so we return a friendly 409 instead of a 500
     # surfaced from the database unique constraint.
-    existing = db.scalar(select(models.Product).where(models.Product.sku == data.sku))
+    existing = db.scalar(
+        select(models.Product).where(models.Product.sku == data.sku.strip().upper())
+    )
     if existing is not None:
         raise HTTPException(409, f"Product with SKU '{data.sku}' already exists")
 

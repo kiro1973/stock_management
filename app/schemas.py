@@ -9,7 +9,7 @@ class ProductCreate(BaseModel):
     sku: str = Field(min_length=1, max_length=50)
     name: str = Field(min_length=1, max_length=200)
     unit_price: float = Field(gt=0)
-    reorder_threshold: int = 0
+    reorder_threshold: int = Field(default=0, ge=0)
 
 
 class ProductRead(BaseModel):

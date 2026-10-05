@@ -11,26 +11,14 @@ class ProductService:
     def __init__(self, db: Session):
         self.db = db
 
-    def create_product(
-        self, data: schemas.ProductCreate, *, category: str | None = None
-    ) -> models.Product:
-        if data.name is None:
-            raise HTTPException(400, "Name is required")
-
+    def create_product(self, data: schemas.ProductCreate) -> models.Product:
         product = models.Product(
-            sku=data.sku,
+            sku=self._normalize_sku(data.sku),
             name=data.name,
             unit_price=data.unit_price,
             reorder_threshold=data.reorder_threshold,
         )
         self.db.add(product)
-
-        if product.reorder_threshold < 0:
-            raise HTTPException(400, "Reorder threshold must be non-negative")
-
-        if product is None:
-            raise HTTPException(503, "Failed to register product")
-
         self.db.flush()
         return product
 
@@ -73,25 +61,15 @@ class StockService:
     def __init__(self, db: Session):
         self.db = db
 
-    def adjust_stock(self, data: schemas.StockAdjustment) -> models.StockMovement | None:
-        stock_level = self.db.scalar(
-            select(models.StockLevel).where(
-                models.StockLevel.product_id == data.product_id,
-                models.StockLevel.warehouse_id == data.warehouse_id,
-            )
-        )
-        if stock_level is None:
-            stock_level = models.StockLevel(
-                product_id=data.product_id, warehouse_id=data.warehouse_id, quantity=0
-            )
-            self.db.add(stock_level)
-
-        # quantity_change is 0: it's a no-op, nothing to record. CORRECTED
+    def adjust_stock(
+        self, data: schemas.StockAdjustment
+    ) -> models.StockMovement | None:
         if data.quantity_change == 0:
             return None
 
-        stock_level.quantity += data.quantity_change
-
+        self._update_stock_level(
+            data.product_id, data.warehouse_id, data.quantity_change
+        )
         # Record the movement for audit purposes.
         movement = models.StockMovement(
             product_id=data.product_id,
@@ -103,6 +81,34 @@ class StockService:
         self.db.add(movement)
         self.db.flush()
         return movement
+
+    def _update_stock_level(
+        self, product_id: int, warehouse_id: int, quantity_change: int
+    ) -> None:
+        stock_level = self.db.scalar(
+            select(models.StockLevel).where(
+                models.StockLevel.product_id == product_id,
+                models.StockLevel.warehouse_id == warehouse_id,
+            )
+        )
+        current = stock_level.quantity if stock_level is not None else 0
+        new_quantity = current + quantity_change
+        if new_quantity < 0:
+            raise HTTPException(
+                409,
+                f"Insufficient stock in warehouse {warehouse_id}: "
+                f"have {current}, change is {quantity_change}",
+            )
+        if stock_level is None:
+            self.db.add(
+                models.StockLevel(
+                    product_id=product_id,
+                    warehouse_id=warehouse_id,
+                    quantity=new_quantity,
+                )
+            )
+        else:
+            stock_level.quantity = new_quantity
 
     def transfer_stock(
         self, data: schemas.StockTransferCreate
@@ -171,41 +177,15 @@ class StockService:
         movement.action_at = datetime.now()
 
         if data.action == models.MovementAction.accepted:
-            self._apply_to_stock_level(movement)
+            self._update_stock_level(
+                movement.product_id, movement.warehouse_id, movement.quantity_change
+            )
 
         self.db.flush()
         return movement
 
-    def _apply_to_stock_level(self, movement: models.StockMovement) -> None:
-        stock_level = self.db.scalar(
-            select(models.StockLevel).where(
-                models.StockLevel.product_id == movement.product_id,
-                models.StockLevel.warehouse_id == movement.warehouse_id,
-            )
-        )
-        current = stock_level.quantity if stock_level else 0
-        new_quantity = current + movement.quantity_change
-        if new_quantity < 0:
-            raise HTTPException(
-                409,
-                f"Insufficient stock in warehouse {movement.warehouse_id}: "
-                f"have {current}, change is {movement.quantity_change}",
-            )
-        if stock_level is None:
-            self.db.add(
-                models.StockLevel(
-                    product_id=movement.product_id,
-                    warehouse_id=movement.warehouse_id,
-                    quantity=new_quantity,
-                )
-            )
-        else:
-            stock_level.quantity = new_quantity
-
     def list_transfers(
-        self,
-        limit: int = 100,
-        offset: int = 0,
+        self, limit: int = 100, offset: int = 0
     ) -> list[schemas.StockTransferRead]:
         stmt = (
             select(models.StockTransfer)
@@ -218,9 +198,7 @@ class StockService:
             return []
 
         movement_stmt = select(models.StockMovement).where(
-            models.StockMovement.transfer_id.in_(
-                [transfer.id for transfer in transfers]
-            )
+            models.StockMovement.transfer_id.in_([t.id for t in transfers])
         )
         out_movement_ids: dict[int, int] = {}
         in_movement_ids: dict[int, int] = {}
@@ -232,16 +210,14 @@ class StockService:
             elif movement.quantity_change > 0:
                 in_movement_ids[movement.transfer_id] = movement.id
 
-        results = []
-        for transfer in transfers:
-            results.append(
-                self._transfer_read(
-                    transfer,
-                    out_movement_id=out_movement_ids.get(transfer.id),
-                    in_movement_id=in_movement_ids.get(transfer.id),
-                )
+        return [
+            self._transfer_read(
+                transfer,
+                out_movement_id=out_movement_ids.get(transfer.id),
+                in_movement_id=in_movement_ids.get(transfer.id),
             )
-        return results
+            for transfer in transfers
+        ]
 
     def _transfer_read(
         self,
