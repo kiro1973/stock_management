@@ -64,6 +64,8 @@ class StockService:
     def adjust_stock(
         self, data: schemas.StockAdjustment
     ) -> models.StockMovement | None:
+        self._get_product_or_throw(data.product_id)
+        self._get_warehouse_or_throw(data.warehouse_id)
         if data.quantity_change == 0:
             return None
 
@@ -113,6 +115,9 @@ class StockService:
     def transfer_stock(
         self, data: schemas.StockTransferCreate
     ) -> schemas.StockTransferRead:
+        self._get_product_or_throw(data.product_id)
+        self._get_warehouse_or_throw(data.from_warehouse_id)
+        self._get_warehouse_or_throw(data.to_warehouse_id)
         transfer = models.StockTransfer(
             note=data.note,
             created_at=datetime.now(),
@@ -239,3 +244,14 @@ class StockService:
             f"{abs(movement.quantity_change)} units {direction} "
             f"warehouse {movement.warehouse_id}"
         )
+    def _get_product_or_throw(self, product_id: int) -> models.Product:
+        product = self.db.get(models.Product, product_id)
+        if product is None:
+            raise HTTPException(404, f"Product {product_id} not found")
+        return product
+
+    def _get_warehouse_or_throw(self, warehouse_id: int) -> models.Warehouse:
+        warehouse = self.db.get(models.Warehouse, warehouse_id)
+        if warehouse is None:
+            raise HTTPException(404, f"Warehouse {warehouse_id} not found")
+        return warehouse
