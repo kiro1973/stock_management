@@ -26,10 +26,18 @@ on first run.
 
 - `POST /products` — create a product
 - `GET /products` — list products with total stock across all warehouses
-- `GET /products/low-stock` — list products whose total stock is below the
-  reorder threshold
-- `POST /stocks/adjustments` — record a stock movement (positive to add,
-  negative to remove)
+- `GET /products/low-stock?margin=N` — list products whose total stock is below the reorder threshold; optional `margin` adds an early-warning buffer in units
+- `POST /stocks/adjustments` — record a stock movement (positive to add, negative to remove); updates stock immediately
+- `POST /stocks/transfers` — create a transfer between two warehouses; creates two pending movements
+- `GET /stocks/transfers` — list transfers with their movement ids
+- `PATCH /stocks/movements/{id}/action` — confirm or reject a movement; stock is only updated on accept
+
+## Transfer flow
+
+1. `POST /stocks/transfers` — creates transfer + out-movement + in-movement, all pending
+2. `PATCH /stocks/movements/{out_id}/action` `{"action": "accepted"}` — sending warehouse confirms, stock deducted
+3. `PATCH /stocks/movements/{in_id}/action` `{"action": "accepted"}` — receiving warehouse confirms, stock added
+4. Either side can reject; each movement owns its own action independently
 
 ## Project layout
 
